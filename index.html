@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Graph playground</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #0f172a; background: #f8fafc; }
+
+      #stage { position: relative; height: 100vh; overflow: hidden;
+               background-image: radial-gradient(#e2e8f0 1px, transparent 1px); background-size: 18px 18px;
+               cursor: grab; user-select: none; }
+      #stage.panning { cursor: grabbing; }
+      #plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+      #edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+
+      /* Hyperedge blobs: under the arrows, inside the pan/zoom transform.
+         Transitions mark the layer stale (fade out); it fades back on settle. */
+      #blobs { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none;
+               opacity: 1; transition: opacity 120ms ease; }
+      #blobs.stale { opacity: 0; }
+      #blobs.off { display: none; }
+      .blob { pointer-events: visiblePainted; cursor: pointer; }
+      .blob-label { font: 700 12px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+                    paint-order: stroke; stroke: #f8fafc; stroke-width: 3px; pointer-events: none; }
+
+      .modetoggle { position: absolute; top: 12px; left: 12px; z-index: 10; display: inline-flex;
+                    border: 1px solid #cbd5e1; border-radius: 9px; overflow: hidden; background: #fff;
+                    box-shadow: 0 4px 18px rgba(15,23,42,0.14); font-size: 13px; }
+      .modetoggle button { border: 0; background: #fff; color: #334155; padding: 7px 16px;
+                           font: inherit; font-weight: 700; cursor: pointer; }
+      .modetoggle button + button { border-left: 1px solid #cbd5e1; }
+      .modetoggle button.on { background: #2563eb; color: #fff; }
+
+      .node { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center;
+              padding: 0 8px; line-height: 1.15; border-radius: 10px; border: 2px solid #93c5fd; background: #fff;
+              color: #0f172a; font-weight: 600; box-shadow: 0 1px 3px rgba(15,23,42,0.10);
+              transform-origin: 50% 50%; cursor: default; }
+      /* Record: one colour per rank (step in the progression). */
+      .node.r0 { border-color: #7c3aed; background: #d0bfff; border-width: 3px; }
+      .node.r1 { border-color: #339af0; background: #a5d8ff; }
+      .node.r2 { border-color: #22b8cf; background: #99e9f2; }
+      .node.r3 { border-color: #40c057; background: #b2f2bb; }
+      .node.r4 { border-color: #f59f00; background: #ffec99; }
+      /* State: one colour per ring (tier); outer aspects wear their
+         hyperedge colours inline. */
+      .node.g0 { border-color: #7c3aed; background: #d0bfff; border-width: 3px; }
+      .node.g1 { border-color: #339af0; background: #a5d8ff; }
+      .node.g2 { border-color: #40c057; background: #b2f2bb; }
+      .node.branchy { cursor: pointer; }
+      .node.folded { border-style: dashed; }
+      .node.circle { border-radius: 50%; }
+      /* Hyperedge hub: a floating pill (or the big focus ellipse), coloured
+         inline from its hyperedge. 999px clamps to 50% on the square hub. */
+      .node.hub { border-radius: 999px; border-style: dashed; border-width: 2px; cursor: pointer; }
+      /* Hover highlight: non-members step back. Filters, not style.opacity —
+         the viewer overwrites opacity every frame. */
+      .node.hl-dim { filter: grayscale(0.7) opacity(0.45); }
+
+      .edge { fill: none; stroke: #94a3b8; stroke-width: var(--edge-w, 1.6px); }
+
+      #back { top: 56px; }
+
+      #export { position: absolute; right: 12px; bottom: 12px; z-index: 10;
+                padding: 7px 16px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff;
+                color: #334155; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
+                box-shadow: 0 4px 18px rgba(15,23,42,0.14); }
+      #export:hover { background: #f1f5f9; }
+
+      .legend { position: absolute; left: 12px; bottom: 12px; z-index: 10; display: flex; gap: 8px; }
+      .legend .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
+                      border: 1px solid #cbd5e1; border-radius: 9px; background: #fff; color: #334155;
+                      font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+                      box-shadow: 0 4px 18px rgba(15,23,42,0.14); }
+      .legend .chip:hover { background: #f1f5f9; }
+      .legend .chip .dot { width: 10px; height: 10px; border-radius: 50%; }
+    </style>
+  </head>
+  <body>
+    <div id="stage">
+      <div id="plane">
+        <svg id="blobs" class="off" width="1" height="1"></svg>
+        <svg id="edges"><defs>
+          <marker id="arrow" markerWidth="8" markerHeight="8" refX="6.5" refY="4" orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M0,0 L7,4 L0,8 z" fill="#94a3b8"></path>
+          </marker>
+        </defs></svg>
+      </div>
+      <div class="modetoggle" id="mode">
+        <button type="button" data-mode="record">Record</button>
+        <button type="button" data-mode="state" class="on">State</button>
+      </div>
+      <div class="modetoggle" id="back" style="display: none">
+        <button type="button">← Record</button>
+      </div>
+      <button type="button" id="export" title="Download the current view as an SVG file">Export SVG</button>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

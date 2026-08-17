@@ -1,0 +1,14 @@
+{
+  "nodes": {
+    "root": "Root",
+    "a": "Alpha",
+    "b": "Bravo",
+    "c": "Charlie"
+  },
+  "edges": [
+    ["root", "a"],
+    ["a", "b"],
+    ["b", "c"]
+  ],
+  "layout": { "nodesep": 60, "ranksep": 150, "startAngle": 0 }
+}

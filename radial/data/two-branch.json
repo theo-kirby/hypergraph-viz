@@ -1,0 +1,22 @@
+{
+  "nodes": {
+    "root": "Root",
+    "left": "Left",
+    "right": "Right",
+    "l1": "L-one",
+    "l2": "L-two",
+    "r1": "R-one",
+    "r2": "R-two",
+    "r3": "R-three"
+  },
+  "edges": [
+    ["root", "right"],
+    ["root", "left"],
+    ["right", "r1"],
+    ["right", "r2"],
+    ["right", "r3"],
+    ["left", "l1"],
+    ["left", "l2"]
+  ],
+  "layout": { "nodesep": 60, "ranksep": 150, "startAngle": 0 }
+}
