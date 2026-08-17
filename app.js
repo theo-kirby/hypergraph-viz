@@ -11,11 +11,14 @@
 // zoom, double-click the background to re-fit.
 // ===========================================================================
 
-import { treeLayout, radialLayout } from "./lib/excaligraph.js";
+import { radialLayout } from "./lib/excaligraph.js";
 import { createViewer } from "./lib/viewer.js";
 import { createPanel, applyArrow } from "./lib/panel.js";
 import { createBlobLayer } from "./lib/hyper.js";
-import { viewToSvg, downloadSvg } from "./lib/export.js";
+import { viewToSvg, downloadSvg, downloadFile } from "./lib/export.js";
+import { viewToScene } from "./lib/excalidraw-scene.js";
+import { ensureHarness, renderScene } from "./lib/excal-render.js";
+import { mountPerfHud } from "./lib/perf-hud.js";
 
 const FONT = 13;
 
@@ -50,8 +53,9 @@ const ASPECTS = {
   assay:     { label: "Assay rig", hue: "#4263eb", fill: "#dbe4ff", members: ["rig", "proto1", "proto2"] },
 };
 
-// The record: the progression over time, left to right. No final result yet —
-// the frontier is just the latest events on each line of inquiry.
+// The record: the progression over time, radiating out from the first
+// question. No final result yet — the frontier is just the latest events on
+// each line of inquiry.
 const RECORD_DATA = makeData([
   ["q0", "lit"], ["q0", "rig"],
   ["lit", "h1"], ["lit", "h2"],
@@ -86,17 +90,27 @@ const STATE_DATA = makeData([
 });
 
 // ---- shared panel rows ------------------------------------------------------
+// Both modes lay out and route the same way — the equal-split radial with bow
+// arrows — so they share the layout and edge rows too. What differs is only
+// the data and the node styling.
+const RADIAL_LAYOUT_ROWS = [
+  { key: "startAngle", label: "start angle", type: "range", min: -180, max: 180, step: 5 },
+  { key: "nodesep", label: "nodesep", type: "range", min: 0, max: 300, step: 5 },
+  { key: "ranksep", label: "ranksep", type: "range", min: 60, max: 400, step: 5 },
+];
+const RADIAL_EDGE_ROWS = [
+  { key: "originSpread", label: "origin", type: "range", min: 0, max: 90 },
+  { key: "bowScale", label: "bow", type: "range", min: 0, max: 3, step: 0.05 },
+];
+const EDGE_SHARED_ROWS = [
+  { key: "gap", label: "gap", type: "range", min: 0, max: 30 },
+  { key: "edgeWidth", label: "width", type: "range", min: 0.5, max: 4, step: 0.1 },
+];
 const SHARED_ROWS = [
   { title: "Nodes", rows: [
     { key: "shape", label: "shape", type: "segment", options: [{ value: "rectangle", label: "Rect" }, { value: "circle", label: "Circle" }] },
     { key: "nodeScale", label: "scale", type: "range", min: 0.6, max: 1.6, step: 0.05 },
-  ] },
-  { title: "Edges", rows: [
-    { key: "radius", label: "radius", type: "range", min: 0, max: 1, step: 0.01 },
-    { key: "lean", label: "lean", type: "range", min: 0, max: 120 },
-    { key: "spread", label: "spread", type: "range", min: 0, max: 48 },
-    { key: "gap", label: "gap", type: "range", min: 0, max: 20 },
-    { key: "edgeWidth", label: "width", type: "range", min: 0.5, max: 4, step: 0.1 },
+    { key: "mono", label: "b & w", type: "check" },
   ] },
   { title: "Arrowhead", rows: [
     { key: "arrowSize", label: "size", type: "range", min: 4, max: 28 },
@@ -113,19 +127,16 @@ const RECORD = {
   data: RECORD_DATA,
   folded: new Set(),
   settings: {
-    direction: "LR", nodesep: 80, ranksep: 160,
-    shape: "rectangle", nodeScale: 1,
-    radius: 0.16, lean: 120, spread: 36, gap: 0,
+    startAngle: 0, nodesep: 160, ranksep: 200,
+    shape: "circle", nodeScale: 1,
+    style: "bow", originSpread: 0, bowScale: 1, gap: 14,
     edgeWidth: 3, arrowSize: 28, arrowHollow: true,
-    durMs: 100,
+    durMs: 100, mono: false,
     hyperView: "blobs", blobPadding: 22, blobCorridor: 14, blobSmoothing: 26,
     blobOpacity: 0.35, blobLabels: true, focusKids: true,
   },
-  layoutRows: [
-    { key: "direction", label: "direction", type: "segment", options: [{ value: "LR", label: "LR" }, { value: "TB", label: "TB" }] },
-    { key: "nodesep", label: "nodesep", type: "range", min: 10, max: 200 },
-    { key: "ranksep", label: "ranksep", type: "range", min: 40, max: 340 },
-  ],
+  layoutRows: RADIAL_LAYOUT_ROWS,
+  edgeRows: RADIAL_EDGE_ROWS,
   // The hyperedges on the record are the outer state-graph nodes: each aspect
   // of the current state, as the set of record events that produced it.
   hyper: Object.entries(ASPECTS).map(([sid, a]) => ({
@@ -154,11 +165,14 @@ const RECORD = {
   },
   layout(nodes, edges) {
     const s = this.settings;
-    return treeLayout(nodes, edges, { direction: s.direction, nodesep: s.nodesep, ranksep: s.ranksep });
+    return radialLayout(nodes, edges, { startAngle: s.startAngle, nodesep: s.nodesep, ranksep: s.ranksep });
   },
-  // No edgeNormal: arrows leave by the side facing the target, which in a
-  // ranked tree is the layout direction.
-  edgeNormal: null,
+  // Every arrow leaves its node along that node's own radial line. The
+  // startAngle knob is the arrow of direction: it aims the first branch, and
+  // the equal split fans the rest of the circle from there.
+  edgeNormal(e, boxOf) {
+    return radialNormal(this.data.roots[0], e, boxOf);
+  },
 };
 
 const STATE = {
@@ -166,17 +180,14 @@ const STATE = {
   data: STATE_DATA,
   folded: new Set(),
   settings: {
-    startAngle: 0, nodesep: 45, ranksep: 111,
+    startAngle: 0, nodesep: 160, ranksep: 200,
     shape: "circle", nodeScale: 1,
-    radius: 0.16, lean: 120, spread: 36, gap: 0,
+    style: "bow", originSpread: 0, bowScale: 1, gap: 14,
     edgeWidth: 3, arrowSize: 28, arrowHollow: true,
-    durMs: 100,
+    durMs: 100, mono: false,
   },
-  layoutRows: [
-    { key: "startAngle", label: "start angle", type: "range", min: -180, max: 180, step: 5 },
-    { key: "nodesep", label: "nodesep", type: "range", min: 0, max: 140 },
-    { key: "ranksep", label: "ranksep", type: "range", min: 40, max: 340 },
-  ],
+  layoutRows: RADIAL_LAYOUT_ROWS,
+  edgeRows: RADIAL_EDGE_ROWS,
   ringSizes: [110, 130, 150],
   node(id) {
     const s = this.settings, circle = s.shape === "circle", k = s.nodeScale;
@@ -224,8 +235,68 @@ function radialNormal(rootId, e, boxOf) {
   return len < 1 ? null : [dx / len, dy / len];
 }
 
+// ---- both: the record on the left, the state on the right ------------------
+// One canvas, both graphs side by side, one shared settings object so the two
+// sides speak the same visual language. The record keeps its hyperedge
+// overlays; the state's outer nodes ARE those hyperedges, sitting across from
+// them — hovering a blob also lights up its state node.
+const RECORD_IDS = new Set(RECORD_DATA.order);
+const BOTH_GAP = 240; // px between the two graphs
+
+// A side mode rendered with someone else's settings (BOTH shares one settings
+// object across both sides); methods keep working via the prototype chain.
+const withSettings = (mode, settings) => Object.assign(Object.create(mode), { settings });
+
+const BOTH = {
+  key: "both",
+  // Combined data: disjoint id sets, so a plain merge gives two roots. Used
+  // by the viewer's ancestor lookups and by the focus view; the two sides lay
+  // themselves out from their own data.
+  data: makeData(
+    [...RECORD_DATA.edgePairs, ...STATE_DATA.edgePairs],
+    { ...RECORD_DATA.labels, ...STATE_DATA.labels },
+  ),
+  folded: RECORD.folded, // the focus view only ever asks about record ids
+  settings: {
+    startAngle: 0, nodesep: 160, ranksep: 200,
+    shape: "circle", nodeScale: 1,
+    style: "bow", originSpread: 0, bowScale: 1, gap: 14,
+    edgeWidth: 3, arrowSize: 28, arrowHollow: true,
+    durMs: 100, mono: false,
+    hyperView: "blobs", blobPadding: 22, blobCorridor: 14, blobSmoothing: 26,
+    blobOpacity: 0.35, blobLabels: true, focusKids: true,
+  },
+  layoutRows: RADIAL_LAYOUT_ROWS,
+  edgeRows: RADIAL_EDGE_ROWS,
+  hyper: RECORD.hyper,
+  hyperRows: RECORD.hyperRows,
+  node(id) {
+    const side = RECORD_IDS.has(id) ? RECORD : STATE;
+    return side.node.call(withSettings(side, this.settings), id);
+  },
+  edgeNormal(e, boxOf) {
+    const onRecord = e.source.startsWith("hy:") || RECORD_IDS.has(e.source);
+    return radialNormal(onRecord ? RECORD_DATA.roots[0] : STATE_DATA.roots[0], e, boxOf);
+  },
+};
+
 let MODE = STATE;
-let FOCUS = null; // focused hyperedge id (record mode only); an overlay state
+let FOCUS = null; // focused hyperedge id (record/both mode); an overlay state
+
+// The routing options for the current view, shared by the live viewer, the
+// SVG export and the Excalidraw scene builder. The focus view is radial, so
+// it always bows, whatever mode it overlays.
+function currentRouteOpts() {
+  const s = MODE.settings;
+  return {
+    style: FOCUS ? "bow" : s.style,
+    gap: s.gap, radius: s.radius, lean: s.lean, spread: s.spread,
+    originSpread: s.originSpread, bowScale: s.bowScale,
+  };
+}
+function currentEdgeNormal(e, boxOf) {
+  return FOCUS ? radialNormal(FOCUS, e, boxOf) : MODE.edgeNormal ? MODE.edgeNormal(e, boxOf) : null;
+}
 
 // ---- the effective view ----------------------------------------------------
 // A hyperedge member that is folded away stands in as its nearest visible
@@ -294,41 +365,46 @@ function focusView(vis) {
   return { nodes, edges, pos, hyper: [] };
 }
 
-function viewFor() {
-  const { data } = MODE;
+function visibleSet(mode) {
   const visible = [];
   const walk = (id) => {
     visible.push(id);
-    if (MODE.folded.has(id)) return;
-    (data.children.get(id) || []).forEach(walk);
+    if (mode.folded.has(id)) return;
+    (mode.data.children.get(id) || []).forEach(walk);
   };
-  data.roots.forEach(walk);
-  const vis = new Set(visible);
+  mode.data.roots.forEach(walk);
+  return visible;
+}
 
-  if (FOCUS) return focusView(vis);
+// The plain view of one mode: its visible nodes, edges, layout and resolved
+// hyperedges. BOTH calls it once per side.
+function modeView(mode) {
+  const { data } = mode;
+  const visible = visibleSet(mode);
+  const vis = new Set(visible);
 
   const nodes = visible.map((id) => ({
     id,
-    ...MODE.node(id),
-    fs: FONT * MODE.settings.nodeScale,
+    ...mode.node(id),
+    fs: FONT * mode.settings.nodeScale,
     label: data.labels[id] || id,
     kids: (data.children.get(id) || []).length,
-    folded: MODE.folded.has(id),
-    hidden: MODE.folded.has(id) ? data.descendants(id).length : 0,
+    folded: mode.folded.has(id),
+    hidden: mode.folded.has(id) ? data.descendants(id).length : 0,
   }));
   const edges = data.edgePairs
     .filter(([a, b]) => vis.has(a) && vis.has(b))
     .map(([a, b]) => ({ id: a + ">" + b, source: a, target: b }));
 
   const pos = {};
-  MODE.layout(nodes.map((n) => ({ id: n.id, width: n.w, height: n.h })), edges)
+  mode.layout(nodes.map((n) => ({ id: n.id, width: n.w, height: n.h })), edges)
     .forEach((c, id) => { pos[id] = c; });
 
-  const hyper = (MODE.hyper || []).map((h) => ({ ...h, members: resolveMembers(h, vis, data) }));
+  const hyper = (mode.hyper || []).map((h) => ({ ...h, members: resolveMembers(h, vis, data) }));
 
   // Hub view: one floating pill per hyperedge, placed after the layout so the
   // layout engines never see it, joined to its members by dashed spokes.
-  const s = MODE.settings;
+  const s = mode.settings;
   if (hyper.length && (s.hyperView === "hubs" || s.hyperView === "both")) {
     const k = s.nodeScale;
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
@@ -368,6 +444,47 @@ function viewFor() {
   return { nodes, edges, pos, hyper };
 }
 
+// Black & white: rewrite the view's colours in place — black node outlines on
+// no fill, grey edges and grey blobs. Exports and the Excalidraw scene read
+// the same view, so they go monochrome with it.
+function finishView(view) {
+  if (MODE.settings.mono) {
+    view.nodes.forEach((n) => { n.hue = "#0f172a"; n.fill = "transparent"; });
+    view.edges.forEach((e) => { if (e.stroke) e.stroke = "#94a3b8"; });
+    (view.hyper || []).forEach((h) => { h.hue = "#475569"; h.fill = "#cbd5e1"; });
+  }
+  return view;
+}
+
+function viewFor() {
+  if (FOCUS) return finishView(focusView(new Set(visibleSet(MODE))));
+  if (MODE !== BOTH) return finishView(modeView(MODE));
+
+  // Both: record on the left, state on the right, centred on each other.
+  const left = modeView(withSettings(RECORD, MODE.settings));
+  const right = modeView(withSettings(STATE, MODE.settings));
+  const bboxOf = (v) => {
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+    v.nodes.forEach((n) => {
+      const p = v.pos[n.id];
+      if (!p) return;
+      x0 = Math.min(x0, p.cx - n.w / 2); y0 = Math.min(y0, p.cy - n.h / 2);
+      x1 = Math.max(x1, p.cx + n.w / 2); y1 = Math.max(y1, p.cy + n.h / 2);
+    });
+    return { x0, y0, x1, y1 };
+  };
+  const lb = bboxOf(left), rb = bboxOf(right);
+  const dx = lb.x1 + BOTH_GAP - rb.x0;
+  const dy = (lb.y0 + lb.y1) / 2 - (rb.y0 + rb.y1) / 2;
+  Object.values(right.pos).forEach((p) => { p.cx += dx; p.cy += dy; });
+  return finishView({
+    nodes: [...left.nodes, ...right.nodes],
+    edges: [...left.edges, ...right.edges],
+    pos: { ...left.pos, ...right.pos },
+    hyper: left.hyper,
+  });
+}
+
 // ---- viewer ----------------------------------------------------------------
 const stage = document.getElementById("stage");
 const plane = document.getElementById("plane");
@@ -379,6 +496,7 @@ function render(discrete) {
   blobs.markStale();
   lastRenderedView = viewFor();
   viewer.transition(lastRenderedView, discrete);
+  scheduleExcal();
 }
 
 const viewer = createViewer({
@@ -388,12 +506,8 @@ const viewer = createViewer({
   // `hy:` ids miss the parent map -> undefined -> hubs fade in/out in place.
   parentOf: (id) => MODE.data.parent.get(id),
   durMs: () => MODE.settings.durMs,
-  routeOpts: () => {
-    const s = MODE.settings;
-    return { gap: s.gap, radius: s.radius, lean: s.lean, spread: s.spread };
-  },
-  edgeNormal: (e, boxOf) =>
-    (FOCUS ? radialNormal(FOCUS, e, boxOf) : MODE.edgeNormal ? MODE.edgeNormal(e, boxOf) : null),
+  routeOpts: currentRouteOpts,
+  edgeNormal: currentEdgeNormal,
   decorate(el, n) {
     el.className = "node " + n.cls
       + (n.shape === "ellipse" ? " circle" : "")
@@ -408,11 +522,16 @@ const viewer = createViewer({
   onNodeClick(id, n) {
     if (id.startsWith("hy:")) { setFocus(FOCUS === id ? null : id); return; }
     if (FOCUS || !n || !n.kids) return;
-    if (MODE.folded.has(id)) MODE.folded.delete(id);
-    else MODE.folded.add(id);
+    // In Both, a fold lands on whichever side owns the node.
+    const folded = MODE === BOTH && !RECORD_IDS.has(id) ? STATE.folded : MODE.folded;
+    if (folded.has(id)) folded.delete(id);
+    else folded.add(id);
     render(true);
   },
-  onSettle() { blobs.settle(); },
+  // The blob retrace is the heaviest thing a state change triggers; while the
+  // opaque Excaligraph overlay hides the live layer, skip it (the overlay
+  // computes its own blobs in viewToScene) and catch up when Live returns.
+  onSettle() { if (!EXCAL) blobs.settle(); },
 });
 
 // ---- hyperedge blob layer --------------------------------------------------
@@ -448,21 +567,88 @@ const blobs = createBlobLayer({
   onClick: (id) => setFocus(id),
 });
 
-// ---- SVG export ------------------------------------------------------------
+// ---- Excaligraph mode ------------------------------------------------------
+// A static render of the current view through the real Excalidraw exporter:
+// view → Excalidraw scene (same geometry the screen draws) → harness SVG,
+// shown in the opaque #excal overlay. Panel changes and mode switches
+// re-render it (debounced); fold/pan/zoom stay live-mode-only.
+let EXCAL = false;
+let excalScene = null;   // last rendered scene, for the .excalidraw download
+let excalSvgText = null; // last harness SVG, for the SVG download
+let excalGen = 0;
+let excalTimer = null;
+const excalEl = document.getElementById("excal");
+const styleEl = document.getElementById("style");
+const exportFileBtn = document.getElementById("exportfile");
+
+async function renderExcal() {
+  const my = ++excalGen;
+  if (!excalEl.querySelector("svg")) {
+    excalEl.innerHTML = '<div class="excal-status">rendering…</div>';
+  }
+  try {
+    await ensureHarness();
+    if (!lastRenderedView) lastRenderedView = viewFor();
+    const s = MODE.settings;
+    const scene = await viewToScene(lastRenderedView, {
+      routeOpts: currentRouteOpts(),
+      edgeNormal: currentEdgeNormal,
+      arrowHollow: s.arrowHollow,
+      edgeWidth: s.edgeWidth,
+      blobs: blobInput(),
+    });
+    const svg = await renderScene(scene);
+    if (my !== excalGen || !EXCAL) return;
+    excalScene = scene;
+    excalSvgText = svg;
+    excalEl.innerHTML = svg;
+  } catch (err) {
+    if (my !== excalGen) return;
+    excalEl.innerHTML = '<div class="excal-status">' + String(err.message ?? err) + "</div>";
+  }
+}
+function scheduleExcal() {
+  if (!EXCAL) return;
+  clearTimeout(excalTimer);
+  excalTimer = setTimeout(renderExcal, 150);
+}
+styleEl.querySelectorAll("button").forEach((b) => {
+  b.addEventListener("click", () => {
+    const on = b.dataset.style === "excal";
+    if (on === EXCAL) return;
+    EXCAL = on;
+    styleEl.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+    excalEl.classList.toggle("on", EXCAL);
+    exportFileBtn.style.display = EXCAL ? "block" : "none";
+    if (EXCAL) renderExcal();
+    else { excalEl.innerHTML = ""; excalSvgText = null; blobs.settle(); }
+  });
+});
+
+// ---- exports ---------------------------------------------------------------
 // The exported file is the settled current view: same layout, same routing,
-// same blobs, drawn from the same geometry code the screen uses.
+// same blobs, drawn from the same geometry code the screen uses. In
+// Excaligraph mode the SVG button downloads the harness-rendered SVG instead,
+// and the second button downloads the scene as an .excalidraw file.
+const exportName = () => MODE.key + (FOCUS ? "-" + FOCUS.replace(/^hy:/, "") : "");
 document.getElementById("export").addEventListener("click", () => {
+  if (EXCAL) {
+    if (excalSvgText) downloadSvg(excalSvgText, exportName() + "-excalidraw.svg");
+    return;
+  }
   if (!lastRenderedView) lastRenderedView = viewFor();
   const s = MODE.settings;
   const svgText = viewToSvg(lastRenderedView, {
-    routeOpts: { gap: s.gap, radius: s.radius, lean: s.lean, spread: s.spread },
+    routeOpts: currentRouteOpts(),
     edgeWidth: s.edgeWidth, arrowSize: s.arrowSize, arrowHollow: s.arrowHollow,
-    edgeNormal: (e, boxOf) =>
-      (FOCUS ? radialNormal(FOCUS, e, boxOf) : MODE.edgeNormal ? MODE.edgeNormal(e, boxOf) : null),
+    edgeNormal: currentEdgeNormal,
     blobs: blobInput(),
   });
-  const name = MODE.key + (FOCUS ? "-" + FOCUS.replace(/^hy:/, "") : "") + ".svg";
-  downloadSvg(svgText, name);
+  downloadSvg(svgText, exportName() + ".svg");
+});
+exportFileBtn.addEventListener("click", () => {
+  if (!excalScene) return;
+  downloadFile(JSON.stringify(excalScene, null, 2), exportName() + ".excalidraw", "application/json");
 });
 
 // ---- focus mode ------------------------------------------------------------
@@ -492,6 +678,8 @@ function highlight(hyperId) {
       hue = h.hue;
       members.add(h.id);
       h.members.forEach((m) => members.add(m));
+      // In Both, the hyperedge IS a state node — light it up across the gap.
+      members.add(h.id.replace(/^hy:/, ""));
     }
   }
   plane.querySelectorAll(".node").forEach((el) => {
@@ -548,6 +736,7 @@ function buildPanel() {
     groups: [
       { title: "Layout", rows: MODE.layoutRows },
       ...(MODE.hyperRows ? [{ title: "Hyperedges", rows: MODE.hyperRows }] : []),
+      { title: "Edges", rows: [...MODE.edgeRows, ...EDGE_SHARED_ROWS] },
       ...SHARED_ROWS,
     ],
     onChange(key, discrete) {
@@ -559,9 +748,10 @@ function buildPanel() {
 
 // ---- mode toggle -----------------------------------------------------------
 const modeEl = document.getElementById("mode");
+const MODES = { record: RECORD, state: STATE, both: BOTH };
 modeEl.querySelectorAll("button").forEach((b) => {
   b.addEventListener("click", () => {
-    const next = b.dataset.mode === "record" ? RECORD : STATE;
+    const next = MODES[b.dataset.mode];
     if (next === MODE) return;
     MODE = next;
     FOCUS = null; // focus is an overlay of the record; leaving clears it
@@ -581,3 +771,4 @@ applyEdgeStyle();
 buildPanel();
 buildLegend();
 render(false);
+mountPerfHud(); // temporary: on-screen jank readout (toggle with P)

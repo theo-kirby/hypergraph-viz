@@ -12,7 +12,10 @@
                background-image: radial-gradient(#e2e8f0 1px, transparent 1px); background-size: 18px 18px;
                cursor: grab; user-select: none; }
       #stage.panning { cursor: grabbing; }
-      #plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+      /* will-change keeps the plane and each node on their own compositor
+         layers: pan/zoom and node motion then composite instead of repainting
+         the whole canvas every animation frame. */
+      #plane { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
       #edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 
       /* Hyperedge blobs: under the arrows, inside the pan/zoom transform.
@@ -32,11 +35,23 @@
                            font: inherit; font-weight: 700; cursor: pointer; }
       .modetoggle button + button { border-left: 1px solid #cbd5e1; }
       .modetoggle button.on { background: #2563eb; color: #fff; }
+      #style { left: 248px; }
 
-      .node { position: absolute; display: flex; align-items: center; justify-content: center; text-align: center;
+      /* Excaligraph mode: a static hand-drawn render of the current view,
+         in an opaque overlay above the live stage (the panel and toggles sit
+         above it at z-index 10). It swallows pointer events; the live view
+         underneath keeps running untouched. */
+      #excal { position: absolute; inset: 0; z-index: 5; overflow: auto; background: #fff;
+               display: none; padding: 24px; }
+      #excal.on { display: block; }
+      #excal svg { display: block; margin: 0 auto; }
+      #excal .excal-status { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+                             color: #64748b; font-weight: 600; }
+
+      .node { position: absolute; left: 0; top: 0; display: flex; align-items: center; justify-content: center; text-align: center;
               padding: 0 8px; line-height: 1.15; border-radius: 10px; border: 2px solid #93c5fd; background: #fff;
               color: #0f172a; font-weight: 600; box-shadow: 0 1px 3px rgba(15,23,42,0.10);
-              transform-origin: 50% 50%; cursor: default; }
+              transform-origin: 50% 50%; cursor: default; will-change: transform, opacity; }
       /* Record: one colour per rank (step in the progression). */
       .node.r0 { border-color: #7c3aed; background: #d0bfff; border-width: 3px; }
       .node.r1 { border-color: #339af0; background: #a5d8ff; }
@@ -62,11 +77,12 @@
 
       #back { top: 56px; }
 
-      #export { position: absolute; right: 12px; bottom: 12px; z-index: 10;
+      #export, #exportfile { position: absolute; right: 12px; bottom: 12px; z-index: 10;
                 padding: 7px 16px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff;
                 color: #334155; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
                 box-shadow: 0 4px 18px rgba(15,23,42,0.14); }
-      #export:hover { background: #f1f5f9; }
+      #export:hover, #exportfile:hover { background: #f1f5f9; }
+      #exportfile { bottom: 56px; display: none; }
 
       .legend { position: absolute; left: 12px; bottom: 12px; z-index: 10; display: flex; gap: 8px; }
       .legend .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
@@ -87,14 +103,21 @@
           </marker>
         </defs></svg>
       </div>
+      <div id="excal"></div>
       <div class="modetoggle" id="mode">
         <button type="button" data-mode="record">Record</button>
         <button type="button" data-mode="state" class="on">State</button>
+        <button type="button" data-mode="both">Both</button>
+      </div>
+      <div class="modetoggle" id="style">
+        <button type="button" data-style="live" class="on">Live</button>
+        <button type="button" data-style="excal">Excaligraph</button>
       </div>
       <div class="modetoggle" id="back" style="display: none">
-        <button type="button">← Record</button>
+        <button type="button">← Back</button>
       </div>
       <button type="button" id="export" title="Download the current view as an SVG file">Export SVG</button>
+      <button type="button" id="exportfile" title="Download the current view as an .excalidraw file">Download .excalidraw</button>
     </div>
     <script type="module" src="/app.js"></script>
   </body>
