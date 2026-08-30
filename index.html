@@ -42,12 +42,9 @@
               padding: 0 8px; line-height: 1.15; border-radius: 10px; border: 2px solid #93c5fd; background: #fff;
               color: #0f172a; font-weight: 600; box-shadow: 0 1px 3px rgba(15,23,42,0.10);
               transform-origin: 50% 50%; cursor: default; will-change: transform, opacity; }
-      /* Record: one colour per rank (step in the progression). */
-      .node.r0 { border-color: #7c3aed; background: #d0bfff; border-width: 3px; }
-      .node.r1 { border-color: #339af0; background: #a5d8ff; }
-      .node.r2 { border-color: #22b8cf; background: #99e9f2; }
-      .node.r3 { border-color: #40c057; background: #b2f2bb; }
-      .node.r4 { border-color: #f59f00; background: #ffec99; }
+      /* Record: colours come inline per rank (app.js recordColor cycles the
+         wheel); the root also gets the thicker border. */
+      .node.r0 { border-width: 3px; }
       /* State: one colour per ring (tier); outer aspects wear their
          hyperedge colours inline. */
       .node.g0 { border-color: #7c3aed; background: #d0bfff; border-width: 3px; }

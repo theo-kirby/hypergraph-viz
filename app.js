@@ -11,11 +11,12 @@
 // zoom, double-click the background to re-fit.
 // ===========================================================================
 
-import { radialLayout } from "./lib/excaligraph.js";
+import { radialLayout, buildForest } from "./lib/excaligraph.js";
+import { bowScaleFor } from "./lib/autofit.js";
 import { createViewer } from "./lib/viewer.js";
 import { createPanel, applyArrow } from "./lib/panel.js";
 import { createBlobLayer } from "./lib/hyper.js";
-import { viewToSvg, downloadSvg, downloadFile } from "./lib/export.js";
+import { viewToSvg, svgToPng, downloadSvg, downloadFile, downloadBlob } from "./lib/export.js";
 import { viewToScene } from "./lib/excalidraw-scene.js";
 import { loadProject } from "./lib/protocol.js";
 
@@ -33,7 +34,14 @@ function makeData(edgePairs, labels, titles = {}) {
     children.get(a).push(b);
   });
   const roots = order.filter((id) => !parent.has(id));
-  const rankOf = (id) => { let r = 0; for (let at = parent.get(id); at !== undefined; at = parent.get(at)) r++; return r; };
+  // Rank = depth in the same spanning forest the radial layout builds, so a
+  // multi-parent node is coloured for the ring it is actually placed on —
+  // walking the first-listed parent chain can disagree with the layout.
+  const forest = buildForest(
+    order.map((id) => ({ id })),
+    edgePairs.map(([a, b]) => ({ source: a, target: b })),
+  );
+  const rankOf = (id) => forest.depth.get(id) ?? 0;
   const descendants = (id) => (children.get(id) || []).flatMap((c) => [c, ...descendants(c)]);
   return { order, parent, children, roots, rankOf, descendants, edgePairs, labels, titles };
 }
@@ -111,8 +119,8 @@ const STATE_DATA = PROJECT
 // the data and the node styling.
 const RADIAL_LAYOUT_ROWS = [
   { key: "startAngle", label: "start angle", type: "range", min: -180, max: 180, step: 5 },
-  { key: "nodesep", label: "nodesep", type: "range", min: 0, max: 300, step: 5 },
-  { key: "ranksep", label: "ranksep", type: "range", min: 60, max: 400, step: 5 },
+  { key: "nodesep", label: "nodesep", type: "range", min: 0, max: 600, step: 5 },
+  { key: "ranksep", label: "ranksep", type: "range", min: 60, max: 1200, step: 5 },
 ];
 const RADIAL_EDGE_ROWS = [
   { key: "originSpread", label: "origin", type: "range", min: 0, max: 90 },
@@ -140,13 +148,32 @@ const SHARED_ROWS = [
   ] },
 ];
 
+// ---- record colours --------------------------------------------------------
+// One colour per rank (step in the progression). The root keeps its purple;
+// every deeper ring cycles through the wheel instead of clamping, so a
+// 40-rank record reads as rings all the way down rather than going one
+// colour after rank 4. First four entries match the old r1–r4 classes.
+const RECORD_ROOT = { hue: "#7c3aed", fill: "#d0bfff" };
+const RECORD_RING_COLORS = [
+  { hue: "#339af0", fill: "#a5d8ff" }, // blue
+  { hue: "#22b8cf", fill: "#99e9f2" }, // cyan
+  { hue: "#40c057", fill: "#b2f2bb" }, // green
+  { hue: "#f59f00", fill: "#ffec99" }, // yellow
+  { hue: "#e8590c", fill: "#ffd8a8" }, // orange
+  { hue: "#e64980", fill: "#fcc2d7" }, // pink
+  { hue: "#82c91e", fill: "#d8f5a2" }, // lime
+  { hue: "#12b886", fill: "#c3fae8" }, // teal
+];
+const recordColor = (rank) =>
+  rank === 0 ? RECORD_ROOT : RECORD_RING_COLORS[(rank - 1) % RECORD_RING_COLORS.length];
+
 // ---- modes -----------------------------------------------------------------
 const RECORD = {
   key: "record",
   data: RECORD_DATA,
   folded: new Set(),
   settings: {
-    startAngle: 0, nodesep: 160, ranksep: 200,
+    startAngle: 0, nodesep: 0, ranksep: 250,
     shape: "circle", nodeScale: 1.25,
     style: "bow", originSpread: 0, bowScale: 2.1, gap: 9,
     edgeWidth: 4, arrowSize: 28, arrowHollow: true,
@@ -175,11 +202,15 @@ const RECORD = {
   ],
   node(id) {
     const s = this.settings, circle = s.shape === "circle", k = s.nodeScale;
+    const rank = this.data.rankOf(id);
+    const color = recordColor(rank);
     return {
       w: (circle ? 110 : 150) * k,
       h: (circle ? 110 : 56) * k,
       shape: circle ? "ellipse" : "rectangle",
-      cls: "r" + Math.min(this.data.rankOf(id), 4),
+      cls: rank === 0 ? "r0" : "rn",
+      hue: color.hue,
+      fill: color.fill,
     };
   },
   layout(nodes, edges) {
@@ -199,7 +230,7 @@ const STATE = {
   data: STATE_DATA,
   folded: new Set(),
   settings: {
-    startAngle: 0, nodesep: 160, ranksep: 200,
+    startAngle: 0, nodesep: 0, ranksep: 250,
     shape: "circle", nodeScale: 1.25,
     style: "bow", originSpread: 0, bowScale: 2.1, gap: 9,
     edgeWidth: 4, arrowSize: 28, arrowHollow: true,
@@ -262,10 +293,10 @@ function radialNormal(rootId, e, boxOf) {
 const RECORD_IDS = new Set(RECORD_DATA.order);
 const BOTH_GAP = 240; // px between the two graphs
 
-// A side mode rendered with someone else's settings (BOTH shares one settings
-// object across both sides); methods keep working via the prototype chain.
-const withSettings = (mode, settings) => Object.assign(Object.create(mode), { settings });
-
+// Both draws each side with that side's own tuned settings — layout, edges,
+// nodes all come from RECORD.settings / STATE.settings, so the combined view
+// always matches the two solo modes. Only the overlay and canvas knobs below
+// belong to the combined view itself.
 const BOTH = {
   key: "both",
   // Combined data: disjoint id sets, so a plain merge gives two roots. Used
@@ -278,36 +309,57 @@ const BOTH = {
   ),
   folded: RECORD.folded, // the focus view only ever asks about record ids
   settings: {
-    startAngle: 0, nodesep: 160, ranksep: 200,
-    shape: "circle", nodeScale: 1.25,
-    style: "bow", originSpread: 0, bowScale: 2.1, gap: 9,
-    edgeWidth: 4, arrowSize: 28, arrowHollow: true,
     durMs: 100, mono: false, bgDots: 0.1,
     hyperView: "blobs", blobPadding: 27, blobCorridor: 40, blobSmoothing: 60,
     blobOpacity: 0.25, blobLabels: true, focusKids: true,
   },
-  layoutRows: RADIAL_LAYOUT_ROWS,
-  edgeRows: RADIAL_EDGE_ROWS,
   hyper: RECORD.hyper,
   hyperRows: RECORD.hyperRows,
   node(id) {
     const side = RECORD_IDS.has(id) ? RECORD : STATE;
-    return side.node.call(withSettings(side, this.settings), id);
+    return side.node(id);
   },
   edgeNormal(e, boxOf) {
     const onRecord = e.source.startsWith("hy:") || RECORD_IDS.has(e.source);
-    return radialNormal(onRecord ? RECORD_DATA.roots[0] : STATE_DATA.roots[0], e, boxOf);
+    const side = onRecord ? RECORD : STATE;
+    return side.edgeNormal(e, boxOf);
   },
 };
 
+// ---- bow auto-fit on load --------------------------------------------------
+// The spacing defaults are fixed (nodesep 0, ranksep 250): dense on purpose,
+// and a little overlap on a big record is fine — the sliders tune it. The
+// bowScale is still computed per mode: the value that merges each sibling
+// fan into one line that forks partway out, from the fan angles this dataset
+// actually produces at those defaults.
+function autoBow(mode, data) {
+  const s = mode.settings;
+  const nodes = data.order.map((id) => {
+    const n = mode.node(id);
+    return { id, width: n.w, height: n.h };
+  });
+  const edges = data.edgePairs.map(([a, b]) => ({ source: a, target: b }));
+  const bow = bowScaleFor(nodes, edges, { nodesep: s.nodesep, ranksep: s.ranksep, startAngle: s.startAngle });
+  if (bow !== null) s.bowScale = bow;
+}
+autoBow(RECORD, RECORD_DATA);
+autoBow(STATE, STATE_DATA);
+
 let MODE = STATE;
 let FOCUS = null; // focused hyperedge id (record/both mode); an overlay state
+
+// The settings that drive routing and export styling. Both has no edge
+// settings of its own — the record's stand in (per-edge routeOpts carry each
+// side's real values), and the focus overlay is a record view anyway.
+function routeSettings() {
+  return MODE === BOTH ? RECORD.settings : MODE.settings;
+}
 
 // The routing options for the current view, shared by the live viewer, the
 // SVG export and the Excalidraw scene builder. The focus view is radial, so
 // it always bows, whatever mode it overlays.
 function currentRouteOpts() {
-  const s = MODE.settings;
+  const s = routeSettings();
   return {
     style: FOCUS ? "bow" : s.style,
     gap: s.gap, radius: s.radius, lean: s.lean, spread: s.spread,
@@ -338,7 +390,9 @@ function resolveMembers(h, vis, data) {
 // ring 2. Member ids persist between views, so the ordinary transition
 // tweens them from their record spots onto the ring.
 function focusView(vis) {
-  const { data } = MODE, s = MODE.settings, k = s.nodeScale;
+  // The focus overlay is a record-side view; in Both it borrows the record's
+  // settings (Both's own settings carry no layout or node knobs).
+  const { data } = MODE, s = routeSettings(), k = s.nodeScale;
   const h = MODE.hyper.find((x) => x.id === FOCUS);
   const members = resolveMembers(h, vis, data);
   const memberSet = new Set(members);
@@ -370,7 +424,8 @@ function focusView(vis) {
       // A member's tree edge to another member stays; other children join
       // ring 2 when asked for, each shown once.
       if (memberSet.has(c)) { edges.push({ id: m + ">" + c, source: m, target: c }); return; }
-      if (!s.focusKids || nodes.some((n) => n.id === c)) return;
+      // The overlay toggles live on the current mode (Both keeps its own).
+      if (!MODE.settings.focusKids || nodes.some((n) => n.id === c)) return;
       nodes.push(nodeFor(c));
       edges.push({ id: m + ">" + c, source: m, target: c });
     });
@@ -387,7 +442,11 @@ function focusView(vis) {
 
 function visibleSet(mode) {
   const visible = [];
+  const seen = new Set();
+  // A multi-parent node is reachable through each parent; count it once.
   const walk = (id) => {
+    if (seen.has(id)) return;
+    seen.add(id);
     visible.push(id);
     if (mode.folded.has(id)) return;
     (mode.data.children.get(id) || []).forEach(walk);
@@ -481,8 +540,15 @@ function viewFor() {
   if (MODE !== BOTH) return finishView(modeView(MODE));
 
   // Both: record on the left, state on the right, centred on each other.
-  const left = modeView(withSettings(RECORD, MODE.settings));
-  const right = modeView(withSettings(STATE, MODE.settings));
+  // Each side renders and routes with its own mode's settings.
+  const left = modeView(RECORD);
+  const right = modeView(STATE);
+  const routeOptsOf = (m) => ({
+    style: m.settings.style, gap: m.settings.gap,
+    originSpread: m.settings.originSpread, bowScale: m.settings.bowScale,
+  });
+  left.edges.forEach((e) => { e.routeOpts = routeOptsOf(RECORD); });
+  right.edges.forEach((e) => { e.routeOpts = routeOptsOf(STATE); });
   const bboxOf = (v) => {
     let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
     v.nodes.forEach((n) => {
@@ -542,6 +608,12 @@ const viewer = createViewer({
   },
   onNodeClick(id, n) {
     if (id.startsWith("hy:")) { setFocus(FOCUS === id ? null : id); return; }
+    // In Both, a state aspect node IS a hyperedge — clicking it focuses the
+    // record events behind it, exactly like clicking its blob or hub.
+    if (MODE === BOTH && !FOCUS && ASPECTS[id]) {
+      setFocus("hy:" + id);
+      return;
+    }
     if (FOCUS || !n || !n.kids) return;
     // In Both, a fold lands on whichever side owns the node.
     const folded = MODE === BOTH && !RECORD_IDS.has(id) ? STATE.folded : MODE.folded;
@@ -593,7 +665,7 @@ const blobs = createBlobLayer({
 const exportName = () => MODE.key + (FOCUS ? "-" + FOCUS.replace(/^hy:/, "") : "");
 function exportSvg() {
   if (!lastRenderedView) lastRenderedView = viewFor();
-  const s = MODE.settings;
+  const s = routeSettings();
   const svgText = viewToSvg(lastRenderedView, {
     routeOpts: currentRouteOpts(),
     edgeWidth: s.edgeWidth, arrowSize: s.arrowSize, arrowHollow: s.arrowHollow,
@@ -604,7 +676,7 @@ function exportSvg() {
 }
 async function exportExcalidraw() {
   if (!lastRenderedView) lastRenderedView = viewFor();
-  const s = MODE.settings;
+  const s = routeSettings();
   const scene = await viewToScene(lastRenderedView, {
     routeOpts: currentRouteOpts(),
     edgeNormal: currentEdgeNormal,
@@ -613,6 +685,90 @@ async function exportExcalidraw() {
     blobs: blobInput(),
   });
   downloadFile(JSON.stringify(scene, null, 2), exportName() + ".excalidraw", "application/json");
+}
+
+// ---- PNG export ------------------------------------------------------------
+// Framing: "screen" captures exactly the on-screen window (same pan, same
+// zoom, partial nodes clipped at the edge); "full" frames every node of the
+// current graph. The settings toggle paints the capture's settings into a
+// corner card, so a good-looking configuration can be read back later.
+// These are UI preferences, not view settings — they live outside the
+// per-mode settings objects and their JSON.
+const EXPORT_PREFS = { pngArea: "screen", pngSettings: false };
+
+function screenCrop() {
+  const v = viewer.view();
+  return {
+    x: -v.x / v.k,
+    y: -v.y / v.k,
+    width: stage.clientWidth / v.k,
+    height: stage.clientHeight / v.k,
+  };
+}
+
+// The settings card, drawn onto the finished canvas: one column per settings
+// object (Both shows all three), sized relative to the image so it stays
+// readable at any export resolution.
+function settingsCaption(ctx, W, H) {
+  const sections = MODE === BOTH
+    ? [["both", BOTH.settings], ["record", RECORD.settings], ["state", STATE.settings]]
+    : [[MODE.key, MODE.settings]];
+  const fs = Math.max(11, Math.min(28, Math.round(W / 140)));
+  const lh = Math.round(fs * 1.5);
+  const pad = fs;
+  ctx.font = `${fs}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  const cols = sections.map(([name, s]) => ({
+    title: name.toUpperCase(),
+    lines: Object.entries(s).map(([key, v]) => `${key}: ${v}`),
+  }));
+  const colWidths = cols.map((c) => Math.max(
+    ctx.measureText(c.title).width,
+    ...c.lines.map((t) => ctx.measureText(t).width),
+  ));
+  const gap = fs * 2;
+  const cardW = colWidths.reduce((a, b) => a + b, 0) + gap * (cols.length - 1) + pad * 2;
+  const rows = 1 + Math.max(...cols.map((c) => c.lines.length));
+  const cardH = rows * lh + pad * 2;
+  const x = fs, y = H - cardH - fs;
+
+  ctx.save();
+  ctx.globalAlpha = 0.95;
+  ctx.fillStyle = "#ffffff";
+  ctx.strokeStyle = "#cbd5e1";
+  ctx.lineWidth = Math.max(1, fs / 12);
+  ctx.beginPath();
+  ctx.roundRect(x, y, cardW, cardH, fs * 0.75);
+  ctx.fill();
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+  let cx = x + pad;
+  cols.forEach((c, i) => {
+    ctx.fillStyle = "#64748b";
+    ctx.fillText(c.title, cx, y + pad + fs);
+    ctx.fillStyle = "#334155";
+    c.lines.forEach((t, j) => ctx.fillText(t, cx, y + pad + fs + (j + 1) * lh));
+    cx += colWidths[i] + gap;
+  });
+  ctx.restore();
+}
+
+async function exportPng() {
+  if (!lastRenderedView) lastRenderedView = viewFor();
+  const s = routeSettings();
+  const svgText = viewToSvg(lastRenderedView, {
+    routeOpts: currentRouteOpts(),
+    edgeWidth: s.edgeWidth, arrowSize: s.arrowSize, arrowHollow: s.arrowHollow,
+    edgeNormal: currentEdgeNormal,
+    blobs: blobInput(),
+    crop: EXPORT_PREFS.pngArea === "screen" ? screenCrop() : undefined,
+  });
+  // A screen capture always lands at twice the on-screen pixel size, whatever
+  // the zoom; a full capture asks for 2× view units (capped inside svgToPng).
+  const blob = await svgToPng(svgText, {
+    scale: EXPORT_PREFS.pngArea === "screen" ? 2 * viewer.view().k : 2,
+    annotate: EXPORT_PREFS.pngSettings ? settingsCaption : undefined,
+  });
+  downloadBlob(blob, exportName() + (EXPORT_PREFS.pngArea === "screen" ? "-screen" : "") + ".png");
 }
 
 // ---- focus mode ------------------------------------------------------------
@@ -653,19 +809,27 @@ function highlight(hyperId) {
   });
 }
 // Hovering a hub highlights its hyperedge, like hovering its blob or chip.
+// In Both, a state aspect node doubles as its hyperedge, so hovering it
+// lights the record events behind it even with the overlays switched off.
+const hyperIdOf = (el) => {
+  if (!el) return null;
+  if (el.classList.contains("hub")) return el.dataset.id;
+  if (MODE === BOTH && ASPECTS[el.dataset.id]) return "hy:" + el.dataset.id;
+  return null;
+};
 plane.addEventListener("mouseover", (e) => {
-  const el = e.target.closest(".node.hub");
-  if (el) highlight(el.dataset.id);
+  const id = hyperIdOf(e.target.closest(".node"));
+  if (id) highlight(id);
 });
 plane.addEventListener("mouseout", (e) => {
-  if (e.target.closest(".node.hub")) highlight(null);
+  if (hyperIdOf(e.target.closest(".node"))) highlight(null);
 });
 
 // ---- settings panel --------------------------------------------------------
 function applyEdgeStyle() {
-  const s = MODE.settings;
+  const s = routeSettings(); // stroke width and arrowheads are one global style
   document.documentElement.style.setProperty("--edge-w", s.edgeWidth + "px");
-  document.documentElement.style.setProperty("--bg-dots", s.bgDots);
+  document.documentElement.style.setProperty("--bg-dots", MODE.settings.bgDots);
   applyArrow(document.getElementById("edges"), { size: s.arrowSize, hollow: s.arrowHollow, width: s.edgeWidth });
 }
 
@@ -699,24 +863,52 @@ function modeSegment() {
 let panel = null;
 function buildPanel() {
   if (panel) panel.root.remove();
+  const viewGroup = { title: "View", rows: [
+    { type: "button", label: "Reset view", onClick: () => viewer.refit(),
+      hint: "Re-fit the whole graph on screen" },
+  ] };
+  const exportGroup = { title: "Export", rows: [
+    { type: "button", label: "Export SVG", onClick: exportSvg,
+      hint: "Download the current view as an SVG file" },
+    { type: "button", label: "Export .excalidraw", onClick: exportExcalidraw,
+      hint: "Download the current view as an .excalidraw file" },
+    { key: "pngArea", label: "png area", type: "segment", bind: EXPORT_PREFS,
+      options: [{ value: "screen", label: "Screen" }, { value: "full", label: "Full" }] },
+    { key: "pngSettings", label: "settings", type: "check", bind: EXPORT_PREFS },
+    { type: "button", label: "Export PNG", onClick: exportPng,
+      hint: "Download a PNG — the on-screen window or the whole graph, with the settings painted in if ticked" },
+  ] };
+  // Both draws each side with that side's own settings, so it only offers
+  // the combined view's own knobs: overlays, motion, canvas.
+  const groups = MODE === BOTH
+    ? [
+        viewGroup,
+        { title: "Hyperedges", rows: MODE.hyperRows },
+        { title: "Motion", rows: [
+          { key: "durMs", label: "duration", type: "range", min: 100, max: 1400, step: 20 },
+        ] },
+        { title: "Canvas", rows: [
+          { key: "bgDots", label: "dots", type: "range", min: 0, max: 1, step: 0.05 },
+          { key: "mono", label: "b & w", type: "check" },
+        ] },
+        exportGroup,
+      ]
+    : [
+        viewGroup,
+        { title: "Layout", rows: MODE.layoutRows },
+        ...(MODE.hyperRows ? [{ title: "Hyperedges", rows: MODE.hyperRows }] : []),
+        { title: "Edges", rows: [...MODE.edgeRows, ...EDGE_SHARED_ROWS] },
+        ...SHARED_ROWS,
+        exportGroup,
+      ];
   panel = createPanel({
     mount: stage,
     title: "⚙ Settings",
     top: modeSegment(),
     settings: MODE.settings,
-    groups: [
-      { title: "Layout", rows: MODE.layoutRows },
-      ...(MODE.hyperRows ? [{ title: "Hyperedges", rows: MODE.hyperRows }] : []),
-      { title: "Edges", rows: [...MODE.edgeRows, ...EDGE_SHARED_ROWS] },
-      ...SHARED_ROWS,
-      { title: "Export", rows: [
-        { type: "button", label: "Export SVG", onClick: exportSvg,
-          hint: "Download the current view as an SVG file" },
-        { type: "button", label: "Export .excalidraw", onClick: exportExcalidraw,
-          hint: "Download the current view as an .excalidraw file" },
-      ] },
-    ],
+    groups,
     onChange(key, discrete) {
+      if (key === "pngArea" || key === "pngSettings") return; // export prefs: no repaint
       applyEdgeStyle();
       render(discrete); // the settle/debounce path refreshes the blobs
     },
