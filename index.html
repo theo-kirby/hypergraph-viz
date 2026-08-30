@@ -8,8 +8,10 @@
       * { box-sizing: border-box; }
       body { margin: 0; font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #0f172a; background: #f8fafc; }
 
+      /* Dot grid: --bg-dots is the dots' darkness, 0 (none) to 1 (full slate). */
       #stage { position: relative; height: 100vh; overflow: hidden;
-               background-image: radial-gradient(#e2e8f0 1px, transparent 1px); background-size: 18px 18px;
+               background-image: radial-gradient(rgba(15,23,42,var(--bg-dots,0.1)) 1px, transparent 1px);
+               background-size: 18px 18px;
                cursor: grab; user-select: none; }
       #stage.panning { cursor: grabbing; }
       /* will-change keeps the plane and each node on their own compositor
@@ -35,18 +37,6 @@
                            font: inherit; font-weight: 700; cursor: pointer; }
       .modetoggle button + button { border-left: 1px solid #cbd5e1; }
       .modetoggle button.on { background: #2563eb; color: #fff; }
-      #style { left: 248px; }
-
-      /* Excaligraph mode: a static hand-drawn render of the current view,
-         in an opaque overlay above the live stage (the panel and toggles sit
-         above it at z-index 10). It swallows pointer events; the live view
-         underneath keeps running untouched. */
-      #excal { position: absolute; inset: 0; z-index: 5; overflow: auto; background: #fff;
-               display: none; padding: 24px; }
-      #excal.on { display: block; }
-      #excal svg { display: block; margin: 0 auto; }
-      #excal .excal-status { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
-                             color: #64748b; font-weight: 600; }
 
       .node { position: absolute; left: 0; top: 0; display: flex; align-items: center; justify-content: center; text-align: center;
               padding: 0 8px; line-height: 1.15; border-radius: 10px; border: 2px solid #93c5fd; background: #fff;
@@ -74,23 +64,6 @@
       .node.hl-dim { filter: grayscale(0.7) opacity(0.45); }
 
       .edge { fill: none; stroke: #94a3b8; stroke-width: var(--edge-w, 1.6px); }
-
-      #back { top: 56px; }
-
-      #export, #exportfile { position: absolute; right: 12px; bottom: 12px; z-index: 10;
-                padding: 7px 16px; border: 1px solid #cbd5e1; border-radius: 9px; background: #fff;
-                color: #334155; font: inherit; font-size: 13px; font-weight: 700; cursor: pointer;
-                box-shadow: 0 4px 18px rgba(15,23,42,0.14); }
-      #export:hover, #exportfile:hover { background: #f1f5f9; }
-      #exportfile { bottom: 56px; display: none; }
-
-      .legend { position: absolute; left: 12px; bottom: 12px; z-index: 10; display: flex; gap: 8px; }
-      .legend .chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px;
-                      border: 1px solid #cbd5e1; border-radius: 9px; background: #fff; color: #334155;
-                      font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
-                      box-shadow: 0 4px 18px rgba(15,23,42,0.14); }
-      .legend .chip:hover { background: #f1f5f9; }
-      .legend .chip .dot { width: 10px; height: 10px; border-radius: 50%; }
     </style>
   </head>
   <body>
@@ -103,21 +76,9 @@
           </marker>
         </defs></svg>
       </div>
-      <div id="excal"></div>
-      <div class="modetoggle" id="mode">
-        <button type="button" data-mode="record">Record</button>
-        <button type="button" data-mode="state" class="on">State</button>
-        <button type="button" data-mode="both">Both</button>
-      </div>
-      <div class="modetoggle" id="style">
-        <button type="button" data-style="live" class="on">Live</button>
-        <button type="button" data-style="excal">Excaligraph</button>
-      </div>
       <div class="modetoggle" id="back" style="display: none">
         <button type="button">← Back</button>
       </div>
-      <button type="button" id="export" title="Download the current view as an SVG file">Export SVG</button>
-      <button type="button" id="exportfile" title="Download the current view as an .excalidraw file">Download .excalidraw</button>
     </div>
     <script type="module" src="/app.js"></script>
   </body>

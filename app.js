@@ -17,13 +17,12 @@ import { createPanel, applyArrow } from "./lib/panel.js";
 import { createBlobLayer } from "./lib/hyper.js";
 import { viewToSvg, downloadSvg, downloadFile } from "./lib/export.js";
 import { viewToScene } from "./lib/excalidraw-scene.js";
-import { ensureHarness, renderScene } from "./lib/excal-render.js";
-import { mountPerfHud } from "./lib/perf-hud.js";
+import { loadProject } from "./lib/protocol.js";
 
 const FONT = 13;
 
 // ---- datasets --------------------------------------------------------------
-function makeData(edgePairs, labels) {
+function makeData(edgePairs, labels, titles = {}) {
   const order = [];
   edgePairs.forEach(([a, b]) => [a, b].forEach((id) => { if (!order.includes(id)) order.push(id); }));
   const parent = new Map();
@@ -36,8 +35,15 @@ function makeData(edgePairs, labels) {
   const roots = order.filter((id) => !parent.has(id));
   const rankOf = (id) => { let r = 0; for (let at = parent.get(id); at !== undefined; at = parent.get(at)) r++; return r; };
   const descendants = (id) => (children.get(id) || []).flatMap((c) => [c, ...descendants(c)]);
-  return { order, parent, children, roots, rankOf, descendants, edgePairs, labels };
+  return { order, parent, children, roots, rankOf, descendants, edgePairs, labels, titles };
 }
+
+// ---- data: a served project, or the demo -----------------------------------
+// With HG_PROJECT set, the dev server exposes that project's graph exports
+// (written by `hypergraph export`) at /hg/ and the real graphs load here;
+// otherwise the built-in research example below renders.
+const PROJECT = await loadProject();
+if (PROJECT) document.title = PROJECT.name + " — hypergraph";
 
 // ---- the research example --------------------------------------------------
 // Demo topic: engineering a PET-degrading enzyme to work faster.
@@ -56,7 +62,7 @@ const DEMO_ASPECTS = {
 // The record: the progression over time, radiating out from the first
 // question. No final result yet — the frontier is just the latest events on
 // each line of inquiry.
-const DEMO_RECORD_DATA = makeData([
+const DEMO_RECORD = makeData([
   ["q0", "lit"], ["q0", "rig"],
   ["lit", "h1"], ["lit", "h2"],
   ["h1", "mutA"], ["h1", "mutB"],
@@ -78,7 +84,7 @@ const DEMO_RECORD_DATA = makeData([
 
 // The state: what the project has now, in tiers. The outer ring is exactly
 // the ASPECTS table — those nodes ARE the hyperedges on the record.
-const DEMO_STATE_DATA = makeData([
+const DEMO_STATE = makeData([
   ["now", "design"], ["now", "knowledge"], ["now", "methods"],
   ["design", "mutantA"], ["design", "stability"],
   ["knowledge", "mechanism"],
@@ -89,17 +95,15 @@ const DEMO_STATE_DATA = makeData([
   mechanism: DEMO_ASPECTS.mechanism.label, assay: DEMO_ASPECTS.assay.label,
 });
 
-// ---- local dataset ---------------------------------------------------------
-// Drop a `data.local.js` next to this file to view a real project's graphs:
-// export RECORD_EDGES, RECORD_LABELS, STATE_EDGES, STATE_LABELS, ASPECTS
-// (same shapes as the demo above). Without one, the demo shows.
-const localModules = import.meta.glob("./data.local.js", { eager: true });
-const LOCAL = localModules["./data.local.js"];
-const ASPECTS = LOCAL ? LOCAL.ASPECTS : DEMO_ASPECTS;
-const RECORD_DATA = LOCAL
-  ? makeData(LOCAL.RECORD_EDGES, LOCAL.RECORD_LABELS) : DEMO_RECORD_DATA;
-const STATE_DATA = LOCAL
-  ? makeData(LOCAL.STATE_EDGES, LOCAL.STATE_LABELS) : DEMO_STATE_DATA;
+// A project's aspects come keyed by state slug, so a state node and its
+// hyperedge share an id — same identity trick the demo plays.
+const ASPECTS = PROJECT ? PROJECT.aspects : DEMO_ASPECTS;
+const RECORD_DATA = PROJECT
+  ? makeData(PROJECT.record.pairs, PROJECT.record.labels, PROJECT.record.titles)
+  : DEMO_RECORD;
+const STATE_DATA = PROJECT
+  ? makeData(PROJECT.state.pairs, PROJECT.state.labels, PROJECT.state.titles)
+  : DEMO_STATE;
 
 // ---- shared panel rows ------------------------------------------------------
 // Both modes lay out and route the same way — the equal-split radial with bow
@@ -131,6 +135,9 @@ const SHARED_ROWS = [
   { title: "Motion", rows: [
     { key: "durMs", label: "duration", type: "range", min: 100, max: 1400, step: 20 },
   ] },
+  { title: "Canvas", rows: [
+    { key: "bgDots", label: "dots", type: "range", min: 0, max: 1, step: 0.05 },
+  ] },
 ];
 
 // ---- modes -----------------------------------------------------------------
@@ -140,12 +147,12 @@ const RECORD = {
   folded: new Set(),
   settings: {
     startAngle: 0, nodesep: 160, ranksep: 200,
-    shape: "circle", nodeScale: 1,
-    style: "bow", originSpread: 0, bowScale: 1, gap: 14,
-    edgeWidth: 3, arrowSize: 28, arrowHollow: true,
-    durMs: 100, mono: false,
-    hyperView: "blobs", blobPadding: 22, blobCorridor: 14, blobSmoothing: 26,
-    blobOpacity: 0.35, blobLabels: true, focusKids: true,
+    shape: "circle", nodeScale: 1.25,
+    style: "bow", originSpread: 0, bowScale: 2.1, gap: 9,
+    edgeWidth: 4, arrowSize: 28, arrowHollow: true,
+    durMs: 100, mono: false, bgDots: 0.1,
+    hyperView: "blobs", blobPadding: 27, blobCorridor: 40, blobSmoothing: 60,
+    blobOpacity: 0.25, blobLabels: true, focusKids: true,
   },
   layoutRows: RADIAL_LAYOUT_ROWS,
   edgeRows: RADIAL_EDGE_ROWS,
@@ -193,10 +200,10 @@ const STATE = {
   folded: new Set(),
   settings: {
     startAngle: 0, nodesep: 160, ranksep: 200,
-    shape: "circle", nodeScale: 1,
-    style: "bow", originSpread: 0, bowScale: 1, gap: 14,
-    edgeWidth: 3, arrowSize: 28, arrowHollow: true,
-    durMs: 100, mono: false,
+    shape: "circle", nodeScale: 1.25,
+    style: "bow", originSpread: 0, bowScale: 2.1, gap: 9,
+    edgeWidth: 4, arrowSize: 28, arrowHollow: true,
+    durMs: 100, mono: false, bgDots: 0.1,
   },
   layoutRows: RADIAL_LAYOUT_ROWS,
   edgeRows: RADIAL_EDGE_ROWS,
@@ -267,16 +274,17 @@ const BOTH = {
   data: makeData(
     [...RECORD_DATA.edgePairs, ...STATE_DATA.edgePairs],
     { ...RECORD_DATA.labels, ...STATE_DATA.labels },
+    { ...RECORD_DATA.titles, ...STATE_DATA.titles },
   ),
   folded: RECORD.folded, // the focus view only ever asks about record ids
   settings: {
     startAngle: 0, nodesep: 160, ranksep: 200,
-    shape: "circle", nodeScale: 1,
-    style: "bow", originSpread: 0, bowScale: 1, gap: 14,
-    edgeWidth: 3, arrowSize: 28, arrowHollow: true,
-    durMs: 100, mono: false,
-    hyperView: "blobs", blobPadding: 22, blobCorridor: 14, blobSmoothing: 26,
-    blobOpacity: 0.35, blobLabels: true, focusKids: true,
+    shape: "circle", nodeScale: 1.25,
+    style: "bow", originSpread: 0, bowScale: 2.1, gap: 9,
+    edgeWidth: 4, arrowSize: 28, arrowHollow: true,
+    durMs: 100, mono: false, bgDots: 0.1,
+    hyperView: "blobs", blobPadding: 27, blobCorridor: 40, blobSmoothing: 60,
+    blobOpacity: 0.25, blobLabels: true, focusKids: true,
   },
   layoutRows: RADIAL_LAYOUT_ROWS,
   edgeRows: RADIAL_EDGE_ROWS,
@@ -508,7 +516,6 @@ function render(discrete) {
   blobs.markStale();
   lastRenderedView = viewFor();
   viewer.transition(lastRenderedView, discrete);
-  scheduleExcal();
 }
 
 const viewer = createViewer({
@@ -529,7 +536,9 @@ const viewer = createViewer({
     el.style.background = n.fill || "";
     el.style.fontSize = n.fs + "px";
     el.textContent = n.label + (n.folded ? " ×" + n.hidden : "");
-    el.title = n.kids ? (n.folded ? "Unfold" : "Fold") : "";
+    // Foldable nodes explain the click; truncated labels tell the full title.
+    const full = MODE.data.titles[n.id];
+    el.title = n.kids ? (n.folded ? "Unfold" : "Fold") : full && full !== n.label ? full : "";
   },
   onNodeClick(id, n) {
     if (id.startsWith("hy:")) { setFocus(FOCUS === id ? null : id); return; }
@@ -540,10 +549,7 @@ const viewer = createViewer({
     else folded.add(id);
     render(true);
   },
-  // The blob retrace is the heaviest thing a state change triggers; while the
-  // opaque Excaligraph overlay hides the live layer, skip it (the overlay
-  // computes its own blobs in viewToScene) and catch up when Live returns.
-  onSettle() { if (!EXCAL) blobs.settle(); },
+  onSettle() { blobs.settle(); },
 });
 
 // ---- hyperedge blob layer --------------------------------------------------
@@ -579,75 +585,13 @@ const blobs = createBlobLayer({
   onClick: (id) => setFocus(id),
 });
 
-// ---- Excaligraph mode ------------------------------------------------------
-// A static render of the current view through the real Excalidraw exporter:
-// view → Excalidraw scene (same geometry the screen draws) → harness SVG,
-// shown in the opaque #excal overlay. Panel changes and mode switches
-// re-render it (debounced); fold/pan/zoom stay live-mode-only.
-let EXCAL = false;
-let excalScene = null;   // last rendered scene, for the .excalidraw download
-let excalSvgText = null; // last harness SVG, for the SVG download
-let excalGen = 0;
-let excalTimer = null;
-const excalEl = document.getElementById("excal");
-const styleEl = document.getElementById("style");
-const exportFileBtn = document.getElementById("exportfile");
-
-async function renderExcal() {
-  const my = ++excalGen;
-  if (!excalEl.querySelector("svg")) {
-    excalEl.innerHTML = '<div class="excal-status">rendering…</div>';
-  }
-  try {
-    await ensureHarness();
-    if (!lastRenderedView) lastRenderedView = viewFor();
-    const s = MODE.settings;
-    const scene = await viewToScene(lastRenderedView, {
-      routeOpts: currentRouteOpts(),
-      edgeNormal: currentEdgeNormal,
-      arrowHollow: s.arrowHollow,
-      edgeWidth: s.edgeWidth,
-      blobs: blobInput(),
-    });
-    const svg = await renderScene(scene);
-    if (my !== excalGen || !EXCAL) return;
-    excalScene = scene;
-    excalSvgText = svg;
-    excalEl.innerHTML = svg;
-  } catch (err) {
-    if (my !== excalGen) return;
-    excalEl.innerHTML = '<div class="excal-status">' + String(err.message ?? err) + "</div>";
-  }
-}
-function scheduleExcal() {
-  if (!EXCAL) return;
-  clearTimeout(excalTimer);
-  excalTimer = setTimeout(renderExcal, 150);
-}
-styleEl.querySelectorAll("button").forEach((b) => {
-  b.addEventListener("click", () => {
-    const on = b.dataset.style === "excal";
-    if (on === EXCAL) return;
-    EXCAL = on;
-    styleEl.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-    excalEl.classList.toggle("on", EXCAL);
-    exportFileBtn.style.display = EXCAL ? "block" : "none";
-    if (EXCAL) renderExcal();
-    else { excalEl.innerHTML = ""; excalSvgText = null; blobs.settle(); }
-  });
-});
-
 // ---- exports ---------------------------------------------------------------
 // The exported file is the settled current view: same layout, same routing,
-// same blobs, drawn from the same geometry code the screen uses. In
-// Excaligraph mode the SVG button downloads the harness-rendered SVG instead,
-// and the second button downloads the scene as an .excalidraw file.
+// same blobs, drawn from the same geometry code the screen uses. The
+// .excalidraw export builds the scene on demand through the excaligraph
+// library — same view, same opts, hand-drawn file.
 const exportName = () => MODE.key + (FOCUS ? "-" + FOCUS.replace(/^hy:/, "") : "");
-document.getElementById("export").addEventListener("click", () => {
-  if (EXCAL) {
-    if (excalSvgText) downloadSvg(excalSvgText, exportName() + "-excalidraw.svg");
-    return;
-  }
+function exportSvg() {
   if (!lastRenderedView) lastRenderedView = viewFor();
   const s = MODE.settings;
   const svgText = viewToSvg(lastRenderedView, {
@@ -657,11 +601,19 @@ document.getElementById("export").addEventListener("click", () => {
     blobs: blobInput(),
   });
   downloadSvg(svgText, exportName() + ".svg");
-});
-exportFileBtn.addEventListener("click", () => {
-  if (!excalScene) return;
-  downloadFile(JSON.stringify(excalScene, null, 2), exportName() + ".excalidraw", "application/json");
-});
+}
+async function exportExcalidraw() {
+  if (!lastRenderedView) lastRenderedView = viewFor();
+  const s = MODE.settings;
+  const scene = await viewToScene(lastRenderedView, {
+    routeOpts: currentRouteOpts(),
+    edgeNormal: currentEdgeNormal,
+    arrowHollow: s.arrowHollow,
+    edgeWidth: s.edgeWidth,
+    blobs: blobInput(),
+  });
+  downloadFile(JSON.stringify(scene, null, 2), exportName() + ".excalidraw", "application/json");
+}
 
 // ---- focus mode ------------------------------------------------------------
 const backEl = document.getElementById("back");
@@ -709,34 +661,39 @@ plane.addEventListener("mouseout", (e) => {
   if (e.target.closest(".node.hub")) highlight(null);
 });
 
-// ---- legend ----------------------------------------------------------------
-const legend = document.createElement("div");
-legend.className = "legend";
-stage.appendChild(legend);
-function buildLegend() {
-  legend.innerHTML = "";
-  const hyper = MODE.hyper || [];
-  legend.style.display = hyper.length ? "" : "none";
-  hyper.forEach((h) => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    chip.className = "chip";
-    const dot = document.createElement("span");
-    dot.className = "dot";
-    dot.style.background = h.hue;
-    chip.append(dot, document.createTextNode(h.label));
-    chip.addEventListener("mouseenter", () => highlight(h.id));
-    chip.addEventListener("mouseleave", () => highlight(null));
-    chip.addEventListener("click", () => setFocus(FOCUS === h.id ? null : h.id));
-    legend.appendChild(chip);
-  });
-}
-
-// ---- tune panel ------------------------------------------------------------
+// ---- settings panel --------------------------------------------------------
 function applyEdgeStyle() {
   const s = MODE.settings;
   document.documentElement.style.setProperty("--edge-w", s.edgeWidth + "px");
+  document.documentElement.style.setProperty("--bg-dots", s.bgDots);
   applyArrow(document.getElementById("edges"), { size: s.arrowSize, hollow: s.arrowHollow, width: s.edgeWidth });
+}
+
+// The Record/State/Both toggle lives at the top of the panel; switching
+// rebuilds the panel, so the segment is recreated with the right button on.
+function setMode(next) {
+  if (next === MODE) return;
+  MODE = next;
+  FOCUS = null; // focus is an overlay of the record; leaving clears it
+  backEl.style.display = "none";
+  highlight(null);
+  applyEdgeStyle();
+  buildPanel();
+  render(true);
+}
+
+function modeSegment() {
+  const seg = document.createElement("span");
+  seg.className = "tp-seg";
+  [[RECORD, "Record"], [STATE, "State"], [BOTH, "Both"]].forEach(([mode, label]) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = label;
+    b.classList.toggle("on", mode === MODE);
+    b.addEventListener("click", () => setMode(mode));
+    seg.appendChild(b);
+  });
+  return seg;
 }
 
 let panel = null;
@@ -744,12 +701,20 @@ function buildPanel() {
   if (panel) panel.root.remove();
   panel = createPanel({
     mount: stage,
+    title: "⚙ Settings",
+    top: modeSegment(),
     settings: MODE.settings,
     groups: [
       { title: "Layout", rows: MODE.layoutRows },
       ...(MODE.hyperRows ? [{ title: "Hyperedges", rows: MODE.hyperRows }] : []),
       { title: "Edges", rows: [...MODE.edgeRows, ...EDGE_SHARED_ROWS] },
       ...SHARED_ROWS,
+      { title: "Export", rows: [
+        { type: "button", label: "Export SVG", onClick: exportSvg,
+          hint: "Download the current view as an SVG file" },
+        { type: "button", label: "Export .excalidraw", onClick: exportExcalidraw,
+          hint: "Download the current view as an .excalidraw file" },
+      ] },
     ],
     onChange(key, discrete) {
       applyEdgeStyle();
@@ -758,29 +723,8 @@ function buildPanel() {
   });
 }
 
-// ---- mode toggle -----------------------------------------------------------
-const modeEl = document.getElementById("mode");
-const MODES = { record: RECORD, state: STATE, both: BOTH };
-modeEl.querySelectorAll("button").forEach((b) => {
-  b.addEventListener("click", () => {
-    const next = MODES[b.dataset.mode];
-    if (next === MODE) return;
-    MODE = next;
-    FOCUS = null; // focus is an overlay of the record; leaving clears it
-    backEl.style.display = "none";
-    highlight(null);
-    modeEl.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
-    applyEdgeStyle();
-    buildPanel();
-    buildLegend();
-    render(true);
-  });
-});
-
 window.addEventListener("resize", () => viewer.refit(true));
 
 applyEdgeStyle();
 buildPanel();
-buildLegend();
 render(false);
-mountPerfHud(); // temporary: on-screen jank readout (toggle with P)

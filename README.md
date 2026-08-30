@@ -8,34 +8,31 @@ npm install
 npm run dev
 ```
 
-Without project data attached, a built-in demo shows.
+Without a project, a built-in demo dataset renders.
 
-## Attach a project / detach
+## Visualize a hypergraph project
 
-The integration contract is hypergraph-protocol's JSON exports
-(`.hypergraph/cache/{record,state}.json`, written by `hypergraph export`).
-`make-viz-data.py` (stdlib-only) translates them into `data.local.js`, which
-the viewer picks up automatically:
+Point the dev server at any project that runs the
+[hypergraph protocol](https://github.com/theo-kirby/hypergraph-protocol):
 
 ```
-# in the project: refresh the exports
-hypergraph export --config .hypergraph/config.yml
-
-# here: attach (writes data.local.js — gitignored, per-machine)
-python3 make-viz-data.py ~/path/to/project
-
-# detach (the demo returns)
-python3 make-viz-data.py --detach
+HG_PROJECT=/path/to/project npm run dev
 ```
 
-Each outer state node becomes an aspect — a hyperedge over the record graph,
-built from the `[rec: slug]` provenance references in its body.
+The server reads the project's graph exports —
+`.hypergraph/cache/{record,state}.json`, written by `hypergraph export` (or
+`hypergraph sync`) — and serves them to the app at `/hg/`. The record graph
+renders from the nodes' causal parents; each state node's cited record slugs
+(`## Provenance`, `[rec: …]`, `evidence: …`) become its hyperedge over the
+record. Exports are re-read per request, so after new work lands just re-run
+`hypergraph export` and refresh the page. If the cache is missing, the server
+prints the export command to run and the app falls back to the demo.
 
 ## Use
 
-- **Record / State** — switch between the two graphs (top left).
+- **Settings** panel (top right) — switch between the Record / State / Both views,
+  adjust layout, edges, arrowheads, and blobs live, and export the current view
+  as a standalone `.svg` or `.excalidraw` file.
 - **Drag** to pan, **scroll** to zoom, **double-click** the background to re-fit.
 - **Click** a node with children to fold or unfold its subtree.
-- **Click** a blob, hub, or legend chip to focus that hyperedge. **Esc** goes back.
-- **Tune** panel (top right) — adjust layout, edges, arrowheads, and blobs live.
-- **Export SVG** (bottom right) — download the current view as a standalone `.svg` file.
+- **Click** a blob or hub to focus that hyperedge. **Esc** goes back.
