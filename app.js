@@ -46,7 +46,7 @@ function makeData(edgePairs, labels) {
 // the record events that produced it — that list is its hyperedge on the
 // record graph. Shared events (proto1, asyA, asyB feeding two aspects) are
 // how the aspects overlap and cut across record branches.
-const ASPECTS = {
+const DEMO_ASPECTS = {
   mutantA:   { label: "Mutant A",  hue: "#e64980", fill: "#ffdeeb", members: ["mutA", "asyA", "proto1"] },
   stability: { label: "Stability", hue: "#12b886", fill: "#c3fae8", members: ["asyB", "scan", "bridge", "asyC"] },
   mechanism: { label: "Mechanism", hue: "#f59f00", fill: "#ffec99", members: ["lit", "h1", "asyA"] },
@@ -56,7 +56,7 @@ const ASPECTS = {
 // The record: the progression over time, radiating out from the first
 // question. No final result yet — the frontier is just the latest events on
 // each line of inquiry.
-const RECORD_DATA = makeData([
+const DEMO_RECORD_DATA = makeData([
   ["q0", "lit"], ["q0", "rig"],
   ["lit", "h1"], ["lit", "h2"],
   ["h1", "mutA"], ["h1", "mutB"],
@@ -78,16 +78,28 @@ const RECORD_DATA = makeData([
 
 // The state: what the project has now, in tiers. The outer ring is exactly
 // the ASPECTS table — those nodes ARE the hyperedges on the record.
-const STATE_DATA = makeData([
+const DEMO_STATE_DATA = makeData([
   ["now", "design"], ["now", "knowledge"], ["now", "methods"],
   ["design", "mutantA"], ["design", "stability"],
   ["knowledge", "mechanism"],
   ["methods", "assay"],
 ], {
   now: "Current state", design: "Enzyme design", knowledge: "Knowledge", methods: "Methods",
-  mutantA: ASPECTS.mutantA.label, stability: ASPECTS.stability.label,
-  mechanism: ASPECTS.mechanism.label, assay: ASPECTS.assay.label,
+  mutantA: DEMO_ASPECTS.mutantA.label, stability: DEMO_ASPECTS.stability.label,
+  mechanism: DEMO_ASPECTS.mechanism.label, assay: DEMO_ASPECTS.assay.label,
 });
+
+// ---- local dataset ---------------------------------------------------------
+// Drop a `data.local.js` next to this file to view a real project's graphs:
+// export RECORD_EDGES, RECORD_LABELS, STATE_EDGES, STATE_LABELS, ASPECTS
+// (same shapes as the demo above). Without one, the demo shows.
+const localModules = import.meta.glob("./data.local.js", { eager: true });
+const LOCAL = localModules["./data.local.js"];
+const ASPECTS = LOCAL ? LOCAL.ASPECTS : DEMO_ASPECTS;
+const RECORD_DATA = LOCAL
+  ? makeData(LOCAL.RECORD_EDGES, LOCAL.RECORD_LABELS) : DEMO_RECORD_DATA;
+const STATE_DATA = LOCAL
+  ? makeData(LOCAL.STATE_EDGES, LOCAL.STATE_LABELS) : DEMO_STATE_DATA;
 
 // ---- shared panel rows ------------------------------------------------------
 // Both modes lay out and route the same way — the equal-split radial with bow

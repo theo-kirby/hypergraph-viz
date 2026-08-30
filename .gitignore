@@ -141,3 +141,7 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Per-machine attached project data (make-viz-data.py)
+data.local.js
+.DS_Store
